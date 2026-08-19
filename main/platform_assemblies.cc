@@ -20,10 +20,11 @@ namespace voicelife::runtime {
 
 namespace {
 
-// Linx can deliver several 20 ms PCM frames in one network burst. Keep enough
-// room for a 240 ms burst without turning playback into an unbounded buffer.
-constexpr std::size_t kSparkBotPlaybackQueueDepth = 12;
-constexpr uint32_t kSparkBotPlaybackLatencyBudgetMs = 240;
+// Linx can deliver more than twelve 20 ms PCM frames in one TLS/WebSocket
+// burst. The measured 240 ms bound rejected audio during a long response;
+// retain a finite jitter buffer while allowing a 320 ms burst to drain.
+constexpr std::size_t kSparkBotPlaybackQueueDepth = 16;
+constexpr uint32_t kSparkBotPlaybackLatencyBudgetMs = 320;
 
 /** @brief 从官方 SparkBot 板级 Profile 填充 LVGL 显示配置。 */
 voicelife::display_sparkbot::SparkBotLcdConfig MakeSparkBotLcdConfig() {

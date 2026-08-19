@@ -2230,7 +2230,13 @@ class Runtime final {
         vTaskDelete(nullptr);
 #endif
     }
+    // Keep production at 70. Serial voice validation runs at half volume so
+    // physical-board stress tests do not disturb the surrounding environment.
+#if defined(ESP_PLATFORM) && CONFIG_VOICELIFE_SERIAL_VOICE_TEST
+    int volume_ = 35;
+#else
     int volume_ = 70;
+#endif
     std::atomic<int64_t> capture_started_us_{0};
     std::string stt_display_text_;
     // 下行内容滚动窗口起始字符（0=从头）；滚动迁移至 Ssd1306PresentationAdapter。

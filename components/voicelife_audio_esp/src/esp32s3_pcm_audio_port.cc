@@ -505,10 +505,27 @@ Status Esp32s3PcmAudioPorts::Impl::PushOutput(voice::AudioFrame frame) {
     }
     if (output_queue_.size() >= options_.output_queue_depth) {
         ++rejected_output_frames_;
+#ifdef ESP_PLATFORM
+        ESP_LOGW(
+            voicelife::audio_esp::detail::kAudioRuntimeTag,
+            "OUTPUT_REJECT reason=queue_full queued_frames=%u queued_ms=%llu incoming_ms=%llu capacity=%u budget_ms=%u",
+            static_cast<unsigned>(output_queue_.size()), static_cast<unsigned long long>(output_queue_duration_ms_),
+            static_cast<unsigned long long>(frame_duration_ms), static_cast<unsigned>(options_.output_queue_depth),
+            static_cast<unsigned>(options_.maximum_playback_latency_ms));
+#endif
         return Status::Error(ErrorCode::kConflict, "播放队列已满，拒绝新帧");
     }
     if (output_queue_duration_ms_ + frame_duration_ms > options_.maximum_playback_latency_ms) {
         ++rejected_output_frames_;
+#ifdef ESP_PLATFORM
+        ESP_LOGW(voicelife::audio_esp::detail::kAudioRuntimeTag,
+                 "OUTPUT_REJECT reason=latency_budget queued_frames=%u queued_ms=%llu incoming_ms=%llu capacity=%u "
+                 "budget_ms=%u",
+                 static_cast<unsigned>(output_queue_.size()),
+                 static_cast<unsigned long long>(output_queue_duration_ms_),
+                 static_cast<unsigned long long>(frame_duration_ms), static_cast<unsigned>(options_.output_queue_depth),
+                 static_cast<unsigned>(options_.maximum_playback_latency_ms));
+#endif
         return Status::Error(ErrorCode::kConflict, "播放队列超过最大延迟预算，拒绝新帧");
     }
     // 重采样由唯一的输出任务使用启动期预留的 scratch 完成。网络接收回调只

@@ -304,6 +304,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", default="/dev/cu.usbmodem14201")
     parser.add_argument("--baud", type=int, default=115200)
+    parser.add_argument(
+        "--reset-before-run",
+        action="store_true",
+        help="Hard-reset the test device after opening the serial port, then wait for its full ready sequence.",
+    )
     parser.add_argument("--text", action="append", help="One input utterance; repeat for a multi-turn conversation.")
     parser.add_argument("--tts-model", default="cosyvoice-v3-flash")
     parser.add_argument("--voice", default="longanhuan_v3")
@@ -383,6 +388,12 @@ def main() -> int:
     log.start()
     results: list[TurnResult] = []
     try:
+        if args.reset_before_run:
+            # USB-Serial/JTAG maps RTS to EN. Keeping DTR deasserted avoids
+            # entering the bootloader; this is an explicit test-only reset.
+            device.rts = True
+            time.sleep(0.12)
+            device.rts = False
         log.wait_for("SERIAL_VOICE_TEST_READY=1", 0, 20)
         # READY means the serial endpoint and I2S port exist, not that the
         # asynchronous local wake-model bootstrap has returned the controller
