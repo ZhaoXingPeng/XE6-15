@@ -208,6 +208,20 @@ std::string OutputString(const ToolResult& result, const std::string& key) {
     return {};
 }
 
+bool OutputHasFutureEvent(const ToolResult& result, const std::string& event) {
+    if (!result.output.IsObject()) return false;
+    for (const auto& field : *result.output.object) {
+        if (field.first != "future_occurrences" || !field.second->IsArray()) continue;
+        for (const auto& item : *field.second->array) {
+            if (!item->IsObject()) continue;
+            for (const auto& child : *item->object) {
+                if (child.first == "event" && child.second->IsString() && child.second->string == event) return true;
+            }
+        }
+    }
+    return false;
+}
+
 }  // namespace
 
 int main() {
@@ -377,10 +391,22 @@ int main() {
         .name = "schedule.update",
         .arguments = {{"rule_id", int64_t{600}},
                       {"original_start_time", std::string("2099-01-06 09:00:00")},
-                      {"event", std::string("改期站会")}},
+                      {"event", std::string("改期站会")},
+                      {"start_time", std::string("2099-02-01 09:00:00")}},
     });
     Check(update_occurrence.status.ok() && OutputString(update_occurrence, "status") == "success",
           "修改未来单次应成功");
+
+    // 查询修改后的新日期：原始 occurrence 不在窗口内时，MCP 仍应返回移动后的实例。
+    const auto moved_occurrence_query = server.call({
+        .request_id = "query-moved-occurrence",
+        .name = "schedule.query",
+        .arguments = {{"keyword", std::string("每日站会")},
+                      {"start_date", std::string("2099-02-01")},
+                      {"end_date", std::string("2099-02-02")}},
+    });
+    Check(moved_occurrence_query.status.ok() && OutputHasFutureEvent(moved_occurrence_query, "改期站会"),
+          "查询修改后的新日期必须返回带例外内容的未来实例");
 
     // schedule.update：按 rule_id 更新整条规则。
     const auto update_rule = server.call({

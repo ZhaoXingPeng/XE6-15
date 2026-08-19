@@ -7,10 +7,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <deque>
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <optional>
 #include <string>
 #include <utility>
@@ -144,8 +144,16 @@ class Esp32s3PcmAudioPorts::Impl final {
     std::condition_variable input_cv_;
     std::condition_variable output_cv_;
     std::condition_variable done_cv_;
-    std::deque<voice::AudioFrame> input_queue_;
-    std::deque<voice::AudioFrame> output_queue_;
+    // 队列槽位在 Open 阶段一次性分配；采集/网络回调只移动 AudioFrame，
+    // 不在实时路径创建 deque 节点。
+    std::unique_ptr<voice::AudioFrame[]> input_queue_;
+    [[maybe_unused]] std::size_t input_queue_capacity_ = 0;
+    [[maybe_unused]] std::size_t input_queue_head_ = 0;
+    [[maybe_unused]] std::size_t input_queue_size_ = 0;
+    std::unique_ptr<voice::AudioFrame[]> output_queue_;
+    std::size_t output_queue_capacity_ = 0;
+    std::size_t output_queue_head_ = 0;
+    std::size_t output_queue_size_ = 0;
     uint64_t output_queue_duration_ms_ = 0;
     // Reused only by the output task to avoid heap churn for every I2S period.
     std::vector<int16_t> codec_pcm_scratch_;

@@ -112,6 +112,14 @@ int main() {
     Check(!invalid_outcome.success && invalid_outcome.summary == "日程创建失败",
           "非法参数错误不得进入用户可见 MCP 摘要");
 
+    const auto oversized_number = voicelife::runtime::HandleLinxMcpPayload(
+        R"({"jsonrpc":"2.0","method":"tools/call","params":{"name":"schedule.create","arguments":{"event":"不应执行","start_time":1e30}},"id":7})",
+        server);
+    Check(oversized_number.ok(), "超出 int64 范围的 JSON 数字必须回传受控错误帧");
+    const auto& oversized_result = ParseMcpEnvelope(*oversized_number.value);
+    Check(oversized_result.Get("error") != nullptr && oversized_result.Get("error")->Get("code")->number == -32602,
+          "超出 int64 范围的 JSON 数字不得窄化后进入日程工具");
+
     const auto schedules_before_unavailable = service.query_schedule({
         .schedule_id = std::nullopt,
         .rule_id = std::nullopt,

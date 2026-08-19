@@ -33,13 +33,17 @@ inline std::string FormatDateTime(schedule::DateTime value) {
 
 inline std::optional<schedule::DateTime> ParseDateTime(const std::string& text) {
     int year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0;
-    if (std::sscanf(text.c_str(), "%d-%d-%d %d:%d:%d", &year, &month, &day, &hour, &minute, &second) != 6) {
+    int consumed = 0;
+    if (std::sscanf(text.c_str(), "%d-%d-%d %d:%d:%d%n", &year, &month, &day, &hour, &minute, &second, &consumed) !=
+            6 ||
+        text[consumed] != '\0') {
         return std::nullopt;
     }
     if (month < 1 || month > 12 || day < 1 || day > 31 || hour < 0 || hour > 23 || minute < 0 || minute > 59 ||
         second < 0 || second > 59) {
         return std::nullopt;
     }
+    if (day > schedule::DaysInMonth(year, month)) return std::nullopt;
     const int64_t days = schedule::DaysFromCivil(year, month, day);
     return schedule::DateTime{
         std::chrono::seconds{days * 86400 + hour * 3600 + minute * 60 + second - kTimezoneOffsetSeconds}};
@@ -47,15 +51,20 @@ inline std::optional<schedule::DateTime> ParseDateTime(const std::string& text) 
 
 inline std::optional<schedule::LocalTime> ParseLocalTime(const std::string& text) {
     int hour = 0, minute = 0, second = 0;
-    if (std::sscanf(text.c_str(), "%d:%d:%d", &hour, &minute, &second) < 2) return std::nullopt;
+    int consumed = 0;
+    if (std::sscanf(text.c_str(), "%d:%d:%d%n", &hour, &minute, &second, &consumed) < 2 || text[consumed] != '\0')
+        return std::nullopt;
     if (hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59) return std::nullopt;
     return schedule::LocalTime{hour, minute, second};
 }
 
 inline std::optional<schedule::LocalDate> ParseLocalDate(const std::string& text) {
     int year = 0, month = 0, day = 0;
-    if (std::sscanf(text.c_str(), "%d-%d-%d", &year, &month, &day) != 3) return std::nullopt;
+    int consumed = 0;
+    if (std::sscanf(text.c_str(), "%d-%d-%d%n", &year, &month, &day, &consumed) != 3 || text[consumed] != '\0')
+        return std::nullopt;
     if (month < 1 || month > 12 || day < 1 || day > 31) return std::nullopt;
+    if (day > schedule::DaysInMonth(year, month)) return std::nullopt;
     return schedule::LocalDate{year, month, day};
 }
 
@@ -155,25 +164,35 @@ inline ToolOutputArray ScheduleArrayOutput(const std::vector<schedule::Schedule>
     return output;
 }
 
-inline ToolOutputValue FutureOccurrenceOutput(const schedule::ScheduleRule& rule, schedule::DateTime occurrence) {
+inline ToolOutputValue FutureOccurrenceOutput(const schedule::ScheduleRule& rule, schedule::DateTime occurrence,
+                                              const schedule::ScheduleException* exception = nullptr) {
+    const schedule::DateTime start_time = exception != nullptr && exception->override_start_time.has_value()
+                                              ? *exception->override_start_time
+                                              : occurrence;
+    const std::string event =
+        exception != nullptr && exception->override_event.has_value() ? *exception->override_event : rule.event;
+    const std::optional<std::string> location =
+        exception != nullptr && exception->override_location.has_value() ? exception->override_location : rule.location;
+    const std::optional<std::string> notes =
+        exception != nullptr && exception->override_notes.has_value() ? exception->override_notes : rule.notes;
     std::optional<schedule::DateTime> end_time;
-    if (rule.end_time.has_value()) {
+    if (exception != nullptr && exception->override_end_time.has_value()) {
+        end_time = exception->override_end_time;
+    } else if (rule.end_time.has_value()) {
         const std::int64_t duration =
             schedule::LocalTimeToSeconds(*rule.end_time) - schedule::LocalTimeToSeconds(rule.start_time);
-        end_time = occurrence + std::chrono::seconds{duration};
+        end_time = start_time + std::chrono::seconds{duration};
     }
     return ToolOutputValue::Object({
         MakeToolOutput("rule_id", ToolOutputValue::Integer(rule.id)),
         MakeToolOutput("original_start_time", ToolOutputValue::String(FormatDateTime(occurrence))),
-        MakeToolOutput("event", ToolOutputValue::String(rule.event)),
+        MakeToolOutput("event", ToolOutputValue::String(event)),
         MakeToolOutput("status", ToolOutputValue::String("active")),
-        MakeToolOutput("start_time", ToolOutputValue::String(FormatDateTime(occurrence))),
+        MakeToolOutput("start_time", ToolOutputValue::String(FormatDateTime(start_time))),
         MakeToolOutput("end_time", end_time.has_value() ? ToolOutputValue::String(FormatDateTime(*end_time))
                                                         : ToolOutputValue::Null()),
-        MakeToolOutput("location",
-                       rule.location.has_value() ? ToolOutputValue::String(*rule.location) : ToolOutputValue::Null()),
-        MakeToolOutput("notes",
-                       rule.notes.has_value() ? ToolOutputValue::String(*rule.notes) : ToolOutputValue::Null()),
+        MakeToolOutput("location", location.has_value() ? ToolOutputValue::String(*location) : ToolOutputValue::Null()),
+        MakeToolOutput("notes", notes.has_value() ? ToolOutputValue::String(*notes) : ToolOutputValue::Null()),
         MakeToolOutput("repeat", RepeatOutput(rule)),
     });
 }

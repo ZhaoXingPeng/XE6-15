@@ -7,6 +7,7 @@ bool IsLeapYear(int year) { return (year % 4 == 0 && year % 100 != 0) || (year %
 
 int DaysInMonth(int year, int month) {
     static const int kDays[12] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    if (month < 1 || month > 12) return 0;
     if (month == 2 && IsLeapYear(year)) return 29;
     return kDays[month - 1];
 }

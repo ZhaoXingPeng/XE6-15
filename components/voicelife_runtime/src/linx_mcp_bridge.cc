@@ -1,6 +1,8 @@
 #include "linx_mcp_bridge.h"
 
+#include <cmath>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 #include <string>
 
@@ -128,7 +130,11 @@ Result<std::string> ErrorResponse(const JsonValue& id, int code, std::string_vie
 Result<ToolValue> ToolValueFromJson(const JsonValue& value) {
     if (value.kind == JsonValue::Kind::kString) return Result<ToolValue>::Success(value.string);
     if (value.kind == JsonValue::Kind::kBool) return Result<ToolValue>::Success(value.boolean);
-    if (value.kind == JsonValue::Kind::kNumber && value.number == static_cast<int64_t>(value.number)) {
+    const bool safe_integer = value.kind == JsonValue::Kind::kNumber && std::isfinite(value.number) &&
+                              std::trunc(value.number) == value.number &&
+                              value.number < static_cast<double>(std::numeric_limits<int64_t>::max()) &&
+                              value.number >= static_cast<double>(std::numeric_limits<int64_t>::min());
+    if (safe_integer) {
         return Result<ToolValue>::Success(static_cast<int64_t>(value.number));
     }
     if (value.kind == JsonValue::Kind::kObject) {

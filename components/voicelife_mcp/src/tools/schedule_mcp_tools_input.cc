@@ -1,6 +1,8 @@
 #include "schedule_mcp_tools_input.h"
 
+#include <cmath>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 
@@ -31,11 +33,31 @@ std::optional<std::string> JsonString(const JsonValue& object, const std::string
 
 std::optional<int64_t> JsonInteger(const JsonValue& object, const std::string& key) {
     const JsonValue* value = object.Get(key);
-    if (value == nullptr || value->kind != JsonValue::Kind::kNumber ||
-        value->number != static_cast<int64_t>(value->number)) {
+    if (value == nullptr || value->kind != JsonValue::Kind::kNumber || !std::isfinite(value->number) ||
+        std::trunc(value->number) != value->number ||
+        value->number >= static_cast<double>(std::numeric_limits<int64_t>::max()) ||
+        value->number < static_cast<double>(std::numeric_limits<int64_t>::min())) {
         return std::nullopt;
     }
     return static_cast<int64_t>(value->number);
+}
+
+template <typename T>
+bool ParseBoundedInteger(const JsonValue& object, const char* key, T minimum, T maximum, std::optional<T>& target,
+                         std::string& error) {
+    const JsonValue* value = object.Get(key);
+    if (value == nullptr) return true;
+    const auto parsed = JsonInteger(object, key);
+    if (!parsed.has_value()) {
+        error = std::string("repeat.") + key + " 必须是整数";
+        return false;
+    }
+    if (*parsed < static_cast<int64_t>(minimum) || *parsed > static_cast<int64_t>(maximum)) {
+        error = std::string("repeat.") + key + " 超出可支持范围";
+        return false;
+    }
+    target = static_cast<T>(*parsed);
+    return true;
 }
 
 PropertyList RepeatProperties() {
@@ -112,18 +134,18 @@ ParsedRepeat ParseRepeat(const std::optional<JsonValue>& repeat, bool require_an
         return parsed;
     }
 
-    const auto interval = JsonInteger(*repeat, "interval_val");
-    parsed.interval_val = interval.has_value() ? std::optional<int32_t>{static_cast<int32_t>(*interval)} : std::nullopt;
-
-    const auto weekdays = JsonInteger(*repeat, "weekdays_mask");
-    parsed.weekdays_mask =
-        weekdays.has_value() ? std::optional<uint8_t>{static_cast<uint8_t>(*weekdays)} : std::nullopt;
-    const auto day = JsonInteger(*repeat, "day_of_month");
-    parsed.day_of_month = day.has_value() ? std::optional<uint8_t>{static_cast<uint8_t>(*day)} : std::nullopt;
-    const auto month = JsonInteger(*repeat, "month_of_year");
-    parsed.month_of_year = month.has_value() ? std::optional<uint8_t>{static_cast<uint8_t>(*month)} : std::nullopt;
-    const auto count = JsonInteger(*repeat, "occurrence_count");
-    parsed.occurrence_count = count.has_value() ? std::optional<int32_t>{static_cast<int32_t>(*count)} : std::nullopt;
+    if (!ParseBoundedInteger(*repeat, "interval_val", std::numeric_limits<int32_t>::min(),
+                             std::numeric_limits<int32_t>::max(), parsed.interval_val, parsed.error) ||
+        !ParseBoundedInteger(*repeat, "weekdays_mask", uint8_t{0}, std::numeric_limits<uint8_t>::max(),
+                             parsed.weekdays_mask, parsed.error) ||
+        !ParseBoundedInteger(*repeat, "day_of_month", uint8_t{0}, std::numeric_limits<uint8_t>::max(),
+                             parsed.day_of_month, parsed.error) ||
+        !ParseBoundedInteger(*repeat, "month_of_year", uint8_t{0}, std::numeric_limits<uint8_t>::max(),
+                             parsed.month_of_year, parsed.error) ||
+        !ParseBoundedInteger(*repeat, "occurrence_count", std::numeric_limits<int32_t>::min(),
+                             std::numeric_limits<int32_t>::max(), parsed.occurrence_count, parsed.error)) {
+        return parsed;
+    }
 
     if (require_anchor &&
         (!parsed.freq_type.has_value() || !parsed.start_time.has_value() || !parsed.start_date.has_value())) {

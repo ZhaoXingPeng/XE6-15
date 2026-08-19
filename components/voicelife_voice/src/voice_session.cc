@@ -582,7 +582,12 @@ Status VoiceSession::InterruptAndNotifyLocalWakeWord(std::string_view wake_word,
     uint64_t generation = 0;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (state_ != VoiceSessionState::kCapturing && state_ != VoiceSessionState::kSpeaking) {
+        // Controller also accepts an interrupt while the final STT/MCP turn is
+        // pending. EndCapture leaves that turn in ready + awaiting_final_asr;
+        // treat it as an active remote turn so "别说了" can cancel it and
+        // receive the same provider-backed acknowledgement as other states.
+        const bool finalizing = state_ == VoiceSessionState::kReady && awaiting_final_asr_;
+        if (state_ != VoiceSessionState::kCapturing && state_ != VoiceSessionState::kSpeaking && !finalizing) {
             return Status::Error(ErrorCode::kUnavailable, "语音会话当前不能打断并确认");
         }
         capturing = state_ == VoiceSessionState::kCapturing;

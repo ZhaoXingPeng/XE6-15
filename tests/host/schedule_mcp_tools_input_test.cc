@@ -4,6 +4,7 @@
 #include <optional>
 #include <string>
 
+#include "schedule_tool_output.h"
 #include "support/test_support.h"
 #include "voicelife/contracts/json.h"
 #include "voicelife/mcp/mcp_server.h"
@@ -18,6 +19,8 @@ using voicelife::mcp::schedule_tool_input::ParseRepeat;
 using voicelife::mcp::schedule_tool_input::QueryProperties;
 using voicelife::mcp::schedule_tool_input::UpdateProperties;
 using voicelife::mcp::schedule_tool_input::UpdateRuleCommand;
+using voicelife::mcp::schedule_tool_output::ParseDateTime;
+using voicelife::mcp::schedule_tool_output::ParseLocalDate;
 using voicelife::schedule::Frequency;
 using voicelife::schedule::MonthlyMode;
 using voicelife::test::Check;
@@ -79,6 +82,26 @@ int main() {
     const auto bad_month =
         ParseRepeat(std::optional<JsonValue>{JsonValue::Object({{"monthly_mode", JsonValue::String("bad")}})}, false);
     Check(!bad_month.ok(), "无效 monthly_mode 应失败");
+
+    const auto overflowing_day =
+        ParseRepeat(std::optional<JsonValue>{JsonValue::Object({{"day_of_month", JsonValue::Number(257)}})}, false);
+    Check(!overflowing_day.ok(), "超出 uint8 范围的日期不能窄化后继续执行");
+    const auto negative_month =
+        ParseRepeat(std::optional<JsonValue>{JsonValue::Object({{"month_of_year", JsonValue::Number(-1)}})}, false);
+    Check(!negative_month.ok(), "负月份不能窄化后继续执行");
+    const auto overflowing_interval = ParseRepeat(
+        std::optional<JsonValue>{JsonValue::Object({{"interval_val", JsonValue::Number(2147483648LL)}})}, false);
+    Check(!overflowing_interval.ok(), "超出 int32 范围的间隔应失败");
+    const auto non_integer_interval =
+        ParseRepeat(std::optional<JsonValue>{JsonValue::Object({{"interval_val", JsonValue::String("每天")}})}, false);
+    Check(!non_integer_interval.ok(), "非整数 interval_val 应失败");
+    const auto huge_integer =
+        ParseRepeat(std::optional<JsonValue>{JsonValue::Object({{"interval_val", JsonValue::Number(1e30)}})}, false);
+    Check(!huge_integer.ok(), "超出 int64 可表示范围的数字应失败");
+
+    Check(!ParseLocalDate("2026-02-31").has_value(), "不存在的公历日期不能被自动归一化");
+    Check(!ParseLocalDate("2026-02-01 trailing").has_value(), "日期尾随文本应失败");
+    Check(!ParseDateTime("2026-02-01 09:00:00 trailing").has_value(), "时间尾随文本应失败");
 
     const auto non_object = ParseRepeat(std::optional<JsonValue>{JsonValue::String("bad")}, false);
     Check(!non_object.ok(), "非对象 repeat 应失败");

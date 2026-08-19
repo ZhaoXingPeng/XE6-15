@@ -4,8 +4,8 @@
 #include <cstdio>
 #include <optional>
 #include <string>
-#include <unordered_map>
 #include <utility>
+#include <vector>
 
 #include "schedule_mcp_tools_input.h"
 #include "schedule_tool_output.h"
@@ -25,7 +25,7 @@ namespace voicelife::mcp {
 namespace {
 
 using schedule::DateTime;
-using schedule::ScheduleRule;
+using schedule::ScheduleException;
 using schedule::ScheduleRuleService;
 using schedule::ScheduleService;
 using voicelife::MakeToolOutput;
@@ -153,6 +153,25 @@ bool WithinRange(const std::optional<DateTime>& start, const std::optional<DateT
     return true;
 }
 
+const ScheduleException* FindException(const std::vector<ScheduleException>& exceptions, DateTime original_start_time) {
+    for (const ScheduleException& exception : exceptions) {
+        if (exception.original_start_time == original_start_time) return &exception;
+    }
+    return nullptr;
+}
+
+DateTime EffectiveStartTime(DateTime original_start_time, const ScheduleException* exception) {
+    return exception != nullptr && exception->override_start_time.has_value() ? *exception->override_start_time
+                                                                              : original_start_time;
+}
+
+bool ContainsOriginalOccurrence(const std::vector<DateTime>& occurrences, DateTime original_start_time) {
+    for (DateTime occurrence : occurrences) {
+        if (occurrence == original_start_time) return true;
+    }
+    return false;
+}
+
 }  // namespace
 
 Status RegisterScheduleMcpTools(McpServer& server, ScheduleService& service, ScheduleRuleService* rule_service,
@@ -278,30 +297,49 @@ Status RegisterScheduleMcpTools(McpServer& server, ScheduleService& service, Sch
             ToolOutputArray future_occurrences;
             ToolOutputArray exceptions;
             // 周期部分不物化，只把规则、未来 occurrence、exception 转成模型可读的结果。
-            std::unordered_map<int64_t, ScheduleRule> rule_by_id;
             if (rule_service != nullptr) {
                 schedule::QueryScheduleRulesCommand rule_command;
                 rule_command.keyword = properties.value<std::string>("keyword");
                 rule_command.status = command.status;
                 rule_command.limit = 50;
                 rule_command.offset = 0;
+                rule_command.start_from = start;
+                rule_command.start_to = end;
+                rule_command.occurrence_limit = 50;
                 const auto rules = rule_service->query_schedule_rules(rule_command);
                 if (!rules.status.ok()) return FailureOutput(rules.status.message);
 
                 for (const auto& view : rules.rules) {
-                    rule_by_id.emplace(view.rule.id, view.rule);
                     exceptions.reserve(exceptions.size() + view.exceptions.size());
                     for (const auto& exception : view.exceptions) {
-                        if (WithinRange(start, end, exception.original_start_time)) {
+                        const DateTime effective_start = EffectiveStartTime(exception.original_start_time, &exception);
+                        if (WithinRange(start, end, exception.original_start_time) ||
+                            WithinRange(start, end, effective_start)) {
                             exceptions.emplace_back(MakeToolOutput(schedule_tool_output::ExceptionOutput(exception)));
                         }
                     }
                     future_occurrences.reserve(future_occurrences.size() + view.upcoming_occurrences.size());
                     for (const auto& occurrence : view.upcoming_occurrences) {
-                        if (WithinRange(start, end, occurrence)) {
-                            future_occurrences.emplace_back(
-                                MakeToolOutput(schedule_tool_output::FutureOccurrenceOutput(view.rule, occurrence)));
+                        const ScheduleException* exception = FindException(view.exceptions, occurrence);
+                        if (exception != nullptr && exception->type == schedule::ExceptionType::kSkip) continue;
+                        const DateTime effective_start = EffectiveStartTime(occurrence, exception);
+                        if (WithinRange(start, end, effective_start)) {
+                            future_occurrences.emplace_back(MakeToolOutput(
+                                schedule_tool_output::FutureOccurrenceOutput(view.rule, occurrence, exception)));
                         }
+                    }
+
+                    // 例外把一次 occurrence 移到查询窗口内时，原始 occurrence 不在窗口中，
+                    // 仍需直接返回移动后的实例，避免“查新时间查不到”的断层。
+                    for (const ScheduleException& exception : view.exceptions) {
+                        if (exception.type != schedule::ExceptionType::kModify ||
+                            !exception.override_start_time.has_value() ||
+                            !WithinRange(start, end, *exception.override_start_time) ||
+                            ContainsOriginalOccurrence(view.upcoming_occurrences, exception.original_start_time)) {
+                            continue;
+                        }
+                        future_occurrences.emplace_back(MakeToolOutput(schedule_tool_output::FutureOccurrenceOutput(
+                            view.rule, exception.original_start_time, &exception)));
                     }
                 }
             }

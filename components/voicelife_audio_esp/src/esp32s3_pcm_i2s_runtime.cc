@@ -192,12 +192,16 @@ void Esp32s3PcmAudioPorts::Impl::EnqueueInputLocked(voice::AudioFrame frame) {
     if (!input_running_) {
         return;
     }
-    if (input_queue_.size() >= options_.input_queue_depth) {
-        input_queue_.pop_front();
+    if (input_queue_size_ >= input_queue_capacity_) {
+        input_queue_[input_queue_head_] = voice::AudioFrame{};
+        input_queue_head_ = (input_queue_head_ + 1) % input_queue_capacity_;
+        --input_queue_size_;
         ++dropped_input_frames_;
     }
-    input_queue_.push_back(std::move(frame));
-    input_high_watermark_.store(std::max(input_high_watermark_.load(), input_queue_.size()));
+    const std::size_t slot = (input_queue_head_ + input_queue_size_) % input_queue_capacity_;
+    input_queue_[slot] = std::move(frame);
+    ++input_queue_size_;
+    input_high_watermark_.store(std::max(input_high_watermark_.load(), input_queue_size_));
     input_cv_.notify_one();
 }
 
@@ -308,12 +312,14 @@ void Esp32s3PcmAudioPorts::Impl::DeliveryLoop() {
         voice::AudioFrameSink sink;
         {
             std::unique_lock<std::mutex> lock(mutex_);
-            input_cv_.wait(lock, [this]() { return !input_queue_.empty() || !input_running_; });
-            if (input_queue_.empty() && !input_running_) {
+            input_cv_.wait(lock, [this]() { return input_queue_size_ != 0 || !input_running_; });
+            if (input_queue_size_ == 0 && !input_running_) {
                 break;
             }
-            frame = std::move(input_queue_.front());
-            input_queue_.pop_front();
+            frame = std::move(input_queue_[input_queue_head_]);
+            input_queue_[input_queue_head_] = voice::AudioFrame{};
+            input_queue_head_ = (input_queue_head_ + 1) % input_queue_capacity_;
+            --input_queue_size_;
             sink = input_sink_;
         }
         if (!sink || !sink(std::move(frame)).ok()) {
@@ -460,12 +466,14 @@ void Esp32s3PcmAudioPorts::Impl::OutputLoop() {
         voice::AudioFrame frame;
         {
             std::unique_lock<std::mutex> lock(mutex_);
-            output_cv_.wait(lock, [this]() { return !output_queue_.empty() || !output_running_; });
-            if (output_queue_.empty() && !output_running_) {
+            output_cv_.wait(lock, [this]() { return output_queue_size_ != 0 || !output_running_; });
+            if (output_queue_size_ == 0 && !output_running_) {
                 break;
             }
-            frame = std::move(output_queue_.front());
-            output_queue_.pop_front();
+            frame = std::move(output_queue_[output_queue_head_]);
+            output_queue_[output_queue_head_] = voice::AudioFrame{};
+            output_queue_head_ = (output_queue_head_ + 1) % output_queue_capacity_;
+            --output_queue_size_;
             const uint64_t frame_duration_ms = detail::PcmDurationMs(frame);
             if (frame_duration_ms <= output_queue_duration_ms_) {
                 output_queue_duration_ms_ -= frame_duration_ms;
@@ -483,7 +491,7 @@ void Esp32s3PcmAudioPorts::Impl::OutputLoop() {
         {
             std::lock_guard<std::mutex> lock(mutex_);
             output_writing_ = false;
-            if (amplifier_disable_pending_ && output_queue_.empty() && amplifier_enabled_ && amplifier_callback_) {
+            if (amplifier_disable_pending_ && output_queue_size_ == 0 && amplifier_enabled_ && amplifier_callback_) {
                 amplifier_callback_(false);
                 amplifier_enabled_ = false;
             }

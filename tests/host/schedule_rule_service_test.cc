@@ -421,6 +421,23 @@ int main() {
               skipped_again.exception.has_value() && skipped.exception->id == skipped_again.exception->id,
           "跳过未来单次应幂等返回同一条例外");
 
+    const auto ranged_after_skip = service.query_schedule_rules({
+        .rule_id = created.rule->id,
+        .keyword = std::nullopt,
+        .status = ScheduleStatusFilter::kAll,
+        .limit = 10,
+        .offset = 0,
+        .start_from = At(UtcAtLocal(2099, 1, 1, 0)),
+        .start_to = At(UtcAtLocal(2099, 1, 10, 0)),
+        .occurrence_limit = 50,
+    });
+    Check(ranged_after_skip.status.ok() && ranged_after_skip.rules.size() == 1 &&
+              ranged_after_skip.rules.front().upcoming_occurrences.size() == 8 &&
+              std::none_of(ranged_after_skip.rules.front().upcoming_occurrences.begin(),
+                           ranged_after_skip.rules.front().upcoming_occurrences.end(),
+                           [](DateTime occurrence) { return occurrence == At(UtcAtLocal(2099, 1, 4, 9)); }),
+          "带日期窗口的规则查询应展开窗口并排除 skip 例外");
+
     const auto materialized_conflict = service.update_schedule_occurrence({
         .rule_id = created.rule->id,
         .original_start_time = At(UtcAtLocal(2099, 1, 1, 9)),

@@ -27,7 +27,7 @@ std::optional<DateTime> NextOccurrence(const ScheduleRule& rule, DateTime from);
  * @param rule 周期规则；调用前应保证规则参数已通过校验。
  * @param range_start 左闭边界（UTC 秒）。
  * @param range_end 右开边界（UTC 秒）。
- * @param limit 最多返回的 occurrence 数量；默认 3，显式传入时最大会被收敛到 10。
+ * @param limit 最多返回的 occurrence 数量；默认 3，显式传入时最大会被收敛到 128。
  * @return 按时间升序排列的 occurrence（UTC 秒）。
  */
 std::vector<DateTime> PlanOccurrences(const ScheduleRule& rule, DateTime range_start, DateTime range_end,

@@ -71,8 +71,8 @@ int main() {
     const auto limited = PlanOccurrences(daily, At(UtcAtLocal(2026, 8, 1, 9)), At(UtcAtLocal(2026, 8, 20, 0)), 2);
     Check(limited.size() == 2, "PlanOccurrences 应按显式参数限制返回数量");
 
-    const auto capped = PlanOccurrences(daily, At(UtcAtLocal(2026, 8, 1, 9)), At(UtcAtLocal(2026, 8, 20, 0)), 10000);
-    Check(capped.size() == 10, "PlanOccurrences 显式数量超过上限时应收敛到 10");
+    const auto capped = PlanOccurrences(daily, At(UtcAtLocal(2026, 8, 1, 9)), At(UtcAtLocal(2026, 12, 31, 0)), 10000);
+    Check(capped.size() == 128, "PlanOccurrences 显式数量超过上限时应收敛到 128");
 
     ScheduleRule weekly = BaseRule();
     weekly.freq_type = Frequency::kWeekly;

@@ -17,7 +17,7 @@ constexpr int kDaysPerWeek = 7;
 // 局部微扫只用于修正短月、闰日等边界，正常规则通常几步内就能命中。
 constexpr int kMaxDateSearchSteps = 64;
 // PlanOccurrences 显式传入的 limit 最终会收敛到这个上限，避免调用方误传大值。
-constexpr int kMaxPlanLimit = 10;
+constexpr int kMaxPlanLimit = 128;
 
 /// 东八区 civil time → UTC Unix 秒。
 int64_t UnixFromLocal(int year, int month, int day, int hour, int minute, int second) {
@@ -212,7 +212,7 @@ std::optional<DateTime> NextOccurrence(const ScheduleRule& rule, DateTime from) 
 
 std::vector<DateTime> PlanOccurrences(const ScheduleRule& rule, DateTime range_start, DateTime range_end, int limit) {
     std::vector<DateTime> occurrences;
-    // 默认 3 个，显式传入时最多也只返回 10 个；这是给嵌入式查询预留的硬上限。
+    // 默认 3 个，显式传入时最多返回 128 个；窗口由调用方限定，避免嵌入式查询无界增长。
     const int capped_limit = std::min(kMaxPlanLimit, std::max(0, limit));
     if (capped_limit == 0) return occurrences;
 

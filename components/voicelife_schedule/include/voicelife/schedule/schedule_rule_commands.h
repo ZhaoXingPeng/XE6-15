@@ -38,6 +38,11 @@ struct QueryScheduleRulesCommand {
     ScheduleStatusFilter status = ScheduleStatusFilter::kActive;
     int64_t limit = 10;
     int64_t offset = 0;
+    /// 可选的 occurrence 展开窗口；为空时保持“从当前时间起取若干条”的兼容行为。
+    std::optional<DateTime> start_from;
+    std::optional<DateTime> start_to;
+    /// 窗口查询最多返回的 occurrence 数量，避免无界结果压垮设备和 MCP 响应。
+    int64_t occurrence_limit = 3;
 };
 
 /// 修改整条周期规则所需的数据；未提供字段保持原值。

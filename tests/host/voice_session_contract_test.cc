@@ -373,6 +373,19 @@ int main() {
               finalizing_provider.generation_at_abort == finalizing_session.generation(),
           "等待最终 STT 时打断必须推进 generation 并中止旧服务端回合");
 
+    FakeInput finalizing_ack_input;
+    FakeOutput finalizing_ack_output;
+    FakeProvider finalizing_ack_provider;
+    voicelife::voice::VoiceSession finalizing_ack_session(finalizing_ack_input, finalizing_ack_output,
+                                                          finalizing_ack_provider);
+    Check(finalizing_ack_session.Start(Config()).ok() && finalizing_ack_session.BeginCapture().ok() &&
+              finalizing_ack_session.EndCapture().ok(),
+          "处理中打断确认用例应先进入等待最终 STT");
+    Check(finalizing_ack_session.InterruptAndNotifyLocalWakeWord("别说了", "收到！").ok() &&
+              finalizing_ack_provider.aborts == 1 && finalizing_ack_provider.wake_notifications == 1 &&
+              finalizing_ack_provider.last_wake_response == "收到！",
+          "等待最终 STT 时也必须能取消远端回合并请求受控确认播报");
+
     FakeInput bad_input;
     bad_input.open_result = Status::Error(ErrorCode::kUnavailable, "麦克风不可用");
     FakeOutput unused_output;

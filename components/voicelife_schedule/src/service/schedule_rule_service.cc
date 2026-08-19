@@ -1,5 +1,6 @@
 #include "voicelife/schedule/schedule_rule_service.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <utility>
 
@@ -115,12 +116,37 @@ QueryScheduleRulesResult ScheduleRuleService::query_schedule_rules(const QuerySc
 
         ScheduleRuleView view;
         view.rule = rule;
-        view.upcoming_occurrences = NextOccurrences(rule, now, 3);
         const Result<std::vector<ScheduleException>> exceptions = exception_repository_.FindByRule(rule.id);
         if (!exceptions.ok()) {
             return FailedQueryScheduleRulesResult(exceptions.status);
         }
         view.exceptions = *exceptions.value;
+
+        const int occurrence_limit = static_cast<int>(std::max<int64_t>(0, command.occurrence_limit));
+        if (command.start_from.has_value() && command.start_to.has_value()) {
+            if (*command.start_from < *command.start_to && occurrence_limit > 0) {
+                view.upcoming_occurrences =
+                    PlanOccurrences(rule, *command.start_from, *command.start_to, occurrence_limit);
+            }
+        } else {
+            const DateTime from = command.start_from.value_or(now);
+            view.upcoming_occurrences = NextOccurrences(rule, from, occurrence_limit);
+        }
+
+        // skip 例外在领域层直接从 active occurrence 集合中移除；modify 保留原始时间，
+        // 由 MCP 输出层根据例外生成新的实际开始时间，保证实例仍可用原始时间定位。
+        view.upcoming_occurrences.erase(
+            std::remove_if(view.upcoming_occurrences.begin(), view.upcoming_occurrences.end(),
+                           [&view](DateTime occurrence) {
+                               for (const ScheduleException& exception : view.exceptions) {
+                                   if (exception.original_start_time == occurrence &&
+                                       exception.type == ExceptionType::kSkip) {
+                                       return true;
+                                   }
+                               }
+                               return false;
+                           }),
+            view.upcoming_occurrences.end());
         views.push_back(std::move(view));
     }
 
