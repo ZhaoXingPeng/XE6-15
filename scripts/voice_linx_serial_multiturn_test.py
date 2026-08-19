@@ -36,6 +36,8 @@ class TurnResult:
     input_text: str
     tts_ms: int = 0
     pcm_frames: int = 0
+    pcm_frames_sent: int = 0
+    input_endpoint_truncated: bool = False
     asr_text: str = ""
     asr_matches_input: bool = False
     reply_text: str = ""
@@ -88,6 +90,10 @@ class SerialLog:
     def lines_since(self, after: int) -> list[str]:
         with self._condition:
             return [line for _, line in self._items[after:]]
+
+    def contains_since(self, marker: str, after: int) -> bool:
+        with self._condition:
+            return any(marker in line for _, line in self._items[after:])
 
     def all_lines(self) -> list[str]:
         return self.lines_since(0)
@@ -246,12 +252,21 @@ def run_turn(
             cursor, _ = log.wait_for("SERIAL_VOICE_CAPTURE_READY", cursor, 12)
         turn_cursor = cursor
         for frame in prepared.frames:
+            # A device-side endpoint closes capture asynchronously. Stop the
+            # test source immediately so a malformed utterance is reported as
+            # input truncation rather than inflated with late PCM rejections.
+            if log.contains_since("SERIAL_VOICE_CAPTURE_CLOSED", turn_cursor):
+                result.input_endpoint_truncated = True
+                break
             device.write(packet(PCM, frame))
             device.flush()
+            result.pcm_frames_sent += 1
             time.sleep(0.02)
         device.write(packet(END))
         device.flush()
-        cursor, _ = log.wait_for("SERIAL_VOICE_TURN_END=ok", turn_cursor, 5)
+        cursor, end_result = log.wait_for("SERIAL_VOICE_TURN_END", turn_cursor, 5)
+        if "=ok" not in end_result and not result.input_endpoint_truncated:
+            raise RuntimeError(f"turn_end_failed:{end_result}")
         # Local VAD can stop capture before the explicit host end packet. The
         # packet still terminates injection, but the real state transition is
         # valid from any point after this turn began.
@@ -473,6 +488,7 @@ def main() -> int:
         "asr_text_matches_input": args.allow_asr_mismatch
         or len(results) == len(texts)
         and all(result.asr_matches_input for result in results),
+        "input_not_endpoint_truncated": not any(result.input_endpoint_truncated for result in results),
         "interaction_queue_clean": bool(interaction_stats)
         and all(all(stats.get(key, -1) == 0 for key in interaction_keys) for stats in interaction_stats),
         "no_interaction_rejection": not any("INTERACTION_REJECTED" in line for line in raw_lines),

@@ -416,7 +416,10 @@ Status Esp32s3PcmAudioPorts::Impl::StartCapture(voice::VoiceMode) {
             return detail::Unavailable("PSRAM 分配 I2S 音频投递任务失败");
         }
     }
-    TaskHandle_t delivery_task = xTaskCreateStatic(&DeliveryTaskEntry, "voice_audio_sink", kDeliveryStackWords, this, 4,
+    // The capture task is priority 5. Delivery must be scheduled at the same
+    // real-time priority: it drains the only bounded PCM handoff queue and
+    // may run a local detector while the Wi-Fi/TLS tasks reconnect.
+    TaskHandle_t delivery_task = xTaskCreateStatic(&DeliveryTaskEntry, "voice_audio_sink", kDeliveryStackWords, this, 5,
                                                    delivery_stack_, delivery_tcb_);
     if (delivery_task == nullptr) {
         input_running_ = false;
