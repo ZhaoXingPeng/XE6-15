@@ -6,6 +6,7 @@ import type { ActionId, DeviceId, PairingSessionId } from '../../contracts/ids.j
 import { unsafeId } from '../../contracts/ids.js';
 import type { ActionUiPageResponse } from './action-ui-api.js';
 import { streamReminderActions } from './gateway-sse-response.js';
+import type { WecomAibotUrlCallbackController } from './wecom-aibot-url-callback.js';
 import { ImGatewayError } from '../../shared/errors.js';
 
 const JSON_BODY_LIMIT = 64 * 1024;
@@ -50,6 +51,8 @@ export interface GatewayHttpServerOptions {
     readonly deliveryAvailable?: () => void;
     /** 可选的 SSE 心跳间隔，供基础设施层确定性验证使用。 */
     readonly sseHeartbeatIntervalMs?: number;
+    /** 可选的企业微信 AI Bot URL 回调控制器。 */
+    readonly wecomAibotApi?: WecomAibotUrlCallbackController;
     /**
      * 探测数据库等关键依赖是否仍可用。
      * @returns 健康响应；抛错时监听器返回 503。
@@ -246,6 +249,25 @@ async function routeRequest(
         writeMethodNotAllowed(response, 'GET, POST');
         return;
     }
+    if (url.pathname === '/wecom/aibot') {
+        context.route = 'wecom.aibot.webhook';
+        const webhookApi = options.wecomAibotApi;
+        if (webhookApi === undefined) throw new Error('WeCom AI Bot webhook is not configured');
+        if (method === 'GET') {
+            writeText(response, 200, webhookApi.verify(wecomAibotWebhookRequest(url)));
+            return;
+        }
+        if (method === 'POST') {
+            const result = await webhookApi.post({
+                ...wecomAibotWebhookRequest(url),
+                body: await readBody(request, WECHAT_BODY_LIMIT),
+            });
+            writeText(response, result.status, result.body);
+            return;
+        }
+        writeMethodNotAllowed(response, 'GET, POST');
+        return;
+    }
     const actionUiMatch = ACTION_UI_PATH.exec(url.pathname);
     if (actionUiMatch !== null) {
         context.route = 'action-ui';
@@ -350,6 +372,21 @@ function webhookRequest(url: URL): {
     );
 }
 
+function wecomAibotWebhookRequest(url: URL): {
+    readonly msg_signature?: string;
+    readonly timestamp?: string;
+    readonly nonce?: string;
+    readonly echostr?: string;
+} {
+    const values = ['msg_signature', 'timestamp', 'nonce', 'echostr'] as const;
+    return Object.fromEntries(
+        values.flatMap((name) => {
+            const value = url.searchParams.get(name);
+            return value === null ? [] : [[name, value]];
+        }),
+    );
+}
+
 function correlationId(body: unknown): string | undefined {
     if (typeof body !== 'object' || body === null || Array.isArray(body)) return undefined;
     const value = (body as Record<string, unknown>).correlationId;
@@ -371,7 +408,18 @@ function writePage(response: ServerResponse, page: ActionUiPageResponse): void {
 
 function writeJson(response: ServerResponse, status: number, value: unknown): void {
     response.writeHead(status, responseHeaders('application/json; charset=utf-8'));
-    response.end(JSON.stringify(value));
+    response.end(serializeJson(value));
+}
+
+function serializeJson(value: unknown): string {
+    const serialized = JSON.stringify(value);
+    if (serialized === undefined) return 'null';
+    return serialized
+        .replaceAll('<', '\\u003c')
+        .replaceAll('>', '\\u003e')
+        .replaceAll('&', '\\u0026')
+        .replaceAll('\u2028', '\\u2028')
+        .replaceAll('\u2029', '\\u2029');
 }
 
 function writeText(response: ServerResponse, status: number, body: string): void {
@@ -417,24 +465,48 @@ function writeUnhandledError(response: ServerResponse, error: unknown): void {
 }
 
 function writeGatewayError(response: ServerResponse, error: ImGatewayError): void {
-    const status =
-        error.code === 'unauthorized'
-            ? 401
-            : error.code === 'binding_not_found' ||
-                error.code === 'delivery_not_found' ||
-                error.code === 'action_not_found'
-              ? 404
-              : error.code === 'action_expired'
-                ? 410
-                : error.code === 'idempotency_conflict' || error.code === 'duplicate_event'
-                  ? 409
-                  : error.code === 'resource_exhausted'
-                    ? 429
-                    : error.code === 'invalid_transition'
-                      ? 403
-                      : 400;
-    if (status === 401) response.setHeader('www-authenticate', 'Bearer');
-    writeJson(response, status, { error: error.code });
+    switch (error.code) {
+        case 'unauthorized':
+            response.setHeader('www-authenticate', 'Bearer');
+            writeJson(response, 401, { error: 'unauthorized' });
+            return;
+        case 'binding_not_found':
+            writeJson(response, 404, { error: 'binding_not_found' });
+            return;
+        case 'delivery_not_found':
+            writeJson(response, 404, { error: 'delivery_not_found' });
+            return;
+        case 'action_not_found':
+            writeJson(response, 404, { error: 'action_not_found' });
+            return;
+        case 'action_expired':
+            writeJson(response, 410, { error: 'action_expired' });
+            return;
+        case 'idempotency_conflict':
+            writeJson(response, 409, { error: 'idempotency_conflict' });
+            return;
+        case 'duplicate_event':
+            writeJson(response, 409, { error: 'duplicate_event' });
+            return;
+        case 'resource_exhausted':
+            writeJson(response, 429, { error: 'resource_exhausted' });
+            return;
+        case 'invalid_transition':
+            writeJson(response, 403, { error: 'invalid_transition' });
+            return;
+        case 'invalid_contract':
+            writeJson(response, 400, { error: 'invalid_contract' });
+            return;
+        case 'pairing_code_invalid':
+            writeJson(response, 400, { error: 'pairing_code_invalid' });
+            return;
+        case 'capability_not_supported':
+            writeJson(response, 400, { error: 'capability_not_supported' });
+            return;
+        case 'not_implemented':
+            writeJson(response, 400, { error: 'not_implemented' });
+            return;
+    }
 }
 
 function safeErrorCode(error: unknown): string {

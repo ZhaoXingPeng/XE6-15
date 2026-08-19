@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
+import { TextDecoder } from 'node:util';
 
 import {
     readGatewayConfiguration,
@@ -93,7 +94,7 @@ function fakeRuntime(events) {
     };
 }
 
-async function withServer(work) {
+async function withServer(work, options = {}) {
     const events = [];
     const logs = [];
     const server = await startGatewayHttpServer({
@@ -103,6 +104,7 @@ async function withServer(work) {
         healthCheck: async () => ({ status: 'ok' }),
         logger: { log: (entry) => logs.push(entry) },
         deliveryAvailable: () => events.push({ kind: 'worker-wake' }),
+        ...options,
     });
     try {
         await work({ ...server, events, logs });
@@ -111,12 +113,72 @@ async function withServer(work) {
     }
 }
 
+test('production server mounts the optional WeCom AI Bot URL callback', async () => {
+    const received = [];
+    await withServer(
+        async ({ origin }) => {
+            const verification = await globalThis.fetch(
+                `${origin}/wecom/aibot?timestamp=1786665600&nonce=nonce-fixture&msg_signature=signature-fixture&echostr=encrypted-fixture`,
+            );
+            assert.equal(verification.status, 200);
+            assert.equal(await verification.text(), 'url-verification');
+
+            const callback = await globalThis.fetch(
+                `${origin}/wecom/aibot?timestamp=1786665600&nonce=nonce-fixture&msg_signature=signature-fixture`,
+                {
+                    method: 'POST',
+                    headers: { 'content-type': 'application/json' },
+                    body: JSON.stringify({ encrypt: 'encrypted-fixture' }),
+                },
+            );
+            assert.equal(callback.status, 200);
+            assert.equal(await callback.text(), 'success');
+        },
+        {
+            wecomAibotApi: {
+                verify: (request) => {
+                    received.push({ kind: 'verify', request });
+                    return 'url-verification';
+                },
+                post: async (request) => {
+                    received.push({
+                        kind: 'post',
+                        request: { ...request, body: new TextDecoder().decode(request.body) },
+                    });
+                    return { status: 200, body: 'success' };
+                },
+            },
+        },
+    );
+    assert.deepEqual(received, [
+        {
+            kind: 'verify',
+            request: {
+                timestamp: '1786665600',
+                nonce: 'nonce-fixture',
+                msg_signature: 'signature-fixture',
+                echostr: 'encrypted-fixture',
+            },
+        },
+        {
+            kind: 'post',
+            request: {
+                timestamp: '1786665600',
+                nonce: 'nonce-fixture',
+                msg_signature: 'signature-fixture',
+                body: '{"encrypt":"encrypted-fixture"}',
+            },
+        },
+    ]);
+});
+
 test('production configuration requires every secret without exposing its value', () => {
     const config = readGatewayConfiguration(fixtureEnvironment());
     assert.equal(config.host, '127.0.0.1');
     assert.equal(config.port, 3000);
     assert.equal(config.wechat.channelAccountId, 'wechat-production');
     assert.equal(config.wechat.displayTimeZone, 'Asia/Shanghai');
+    assert.equal(config.wecom, undefined);
     assert.equal(
         new URL(readGatewayConfiguration(fixtureEnvironment({ DATABASE_HOST: 'postgres' })).databaseUrl).hostname,
         'postgres',
@@ -133,6 +195,30 @@ test('production configuration requires every secret without exposing its value'
     assert.throws(
         () => readGatewayConfiguration(fixtureEnvironment({ ACTION_TOKEN_SECRET: 'too-short' })),
         /ACTION_TOKEN_SECRET must contain at least 32 bytes/u,
+    );
+    assert.deepEqual(
+        readGatewayConfiguration(
+            fixtureEnvironment({
+                WECOM_AIBOT_CHANNEL_ACCOUNT_ID: 'wecom-production',
+                WECOM_AIBOT_BOT_ID: 'bot-fixture',
+                WECOM_AIBOT_WEBHOOK_TOKEN: 'wecom-webhook-token',
+                WECOM_AIBOT_ENCODING_AES_KEY: 'abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG',
+            }),
+        ).wecom,
+        {
+            channelAccountId: 'wecom-production',
+            botId: 'bot-fixture',
+            webhookToken: 'wecom-webhook-token',
+            encodingAesKey: 'abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG',
+        },
+    );
+    assert.throws(
+        () => readGatewayConfiguration(fixtureEnvironment({ WECOM_AIBOT_BOT_ID: 'bot-fixture' })),
+        /WECOM_AIBOT_CHANNEL_ACCOUNT_ID is required/u,
+    );
+    assert.throws(
+        () => readGatewayConfiguration(fixtureEnvironment({ WECOM_AIBOT_ENCODING_AES_KEY: 'fixture-key' })),
+        /WECOM_AIBOT_CHANNEL_ACCOUNT_ID is required/u,
     );
 });
 
@@ -188,7 +274,7 @@ test('production entry reports trusted configuration errors without logging thei
 test('production server returns a Bearer challenge for rejected device credentials', async () => {
     const runtime = fakeRuntime([]);
     runtime.deviceApi.postNotification = async () => {
-        throw new ImGatewayError('unauthorized', 'fixture credential rejected');
+        throw new ImGatewayError('unauthorized', '<img src=x onerror=alert(1)>');
     };
     const server = await startGatewayHttpServer({
         host: '127.0.0.1',
@@ -209,7 +295,55 @@ test('production server returns a Bearer challenge for rejected device credentia
         });
         assert.equal(response.status, 401);
         assert.equal(response.headers.get('www-authenticate'), 'Bearer');
-        assert.deepEqual(await response.json(), { error: 'unauthorized' });
+        assert.equal(await response.text(), '{"error":"unauthorized"}');
+    } finally {
+        await server.close();
+    }
+});
+
+test('production server maps every gateway error to a stable JSON response', async () => {
+    const runtime = fakeRuntime([]);
+    let errorCode = 'unauthorized';
+    runtime.deviceApi.postNotification = async () => {
+        throw new ImGatewayError(errorCode, '<img src=x onerror=alert(1)>');
+    };
+    const server = await startGatewayHttpServer({
+        host: '127.0.0.1',
+        port: 0,
+        runtime,
+        healthCheck: async () => ({ status: 'ok' }),
+        logger: { log: () => {} },
+    });
+    const cases = [
+        ['unauthorized', 401],
+        ['invalid_contract', 400],
+        ['pairing_code_invalid', 400],
+        ['capability_not_supported', 400],
+        ['not_implemented', 400],
+        ['binding_not_found', 404],
+        ['delivery_not_found', 404],
+        ['action_not_found', 404],
+        ['action_expired', 410],
+        ['idempotency_conflict', 409],
+        ['duplicate_event', 409],
+        ['invalid_transition', 403],
+        ['resource_exhausted', 429],
+    ];
+    try {
+        for (const [code, status] of cases) {
+            errorCode = code;
+            const response = await globalThis.fetch(`${server.origin}/v1/im/notifications`, {
+                method: 'POST',
+                headers: {
+                    authorization: 'Bearer invalid-token',
+                    'content-type': 'application/json',
+                    'idempotency-key': 'event-1',
+                },
+                body: JSON.stringify({ businessEventId: 'event-1' }),
+            });
+            assert.equal(response.status, status);
+            assert.equal(await response.text(), `{"error":"${code}"}`);
+        }
     } finally {
         await server.close();
     }
@@ -347,6 +481,44 @@ test('production server mounts health, device, Action UI and webhook routes', as
     });
 });
 
+test('production server keeps JSON valid while escaping HTML metacharacters', async () => {
+    const server = await startGatewayHttpServer({
+        host: '127.0.0.1',
+        port: 0,
+        runtime: fakeRuntime([]),
+        healthCheck: async () => ({ message: '</script><img src=x onerror=alert(1)>&' }),
+        logger: { log: () => {} },
+    });
+    try {
+        const response = await globalThis.fetch(`${server.origin}/healthz`);
+        const body = await response.text();
+        assert.equal(body.includes('</script>'), false);
+        assert.equal(body.includes('<img'), false);
+        assert.deepEqual(JSON.parse(body), { message: '</script><img src=x onerror=alert(1)>&' });
+        assert.deepEqual(await new globalThis.Response(body).json(), {
+            message: '</script><img src=x onerror=alert(1)>&',
+        });
+    } finally {
+        await server.close();
+    }
+});
+
+test('production server serializes an undefined JSON value as null', async () => {
+    const server = await startGatewayHttpServer({
+        host: '127.0.0.1',
+        port: 0,
+        runtime: fakeRuntime([]),
+        healthCheck: async () => undefined,
+        logger: { log: () => {} },
+    });
+    try {
+        const response = await globalThis.fetch(`${server.origin}/healthz`);
+        assert.equal(await response.text(), 'null');
+    } finally {
+        await server.close();
+    }
+});
+
 test('production server bounds bodies and maps unsupported requests without leaking details', async () => {
     await withServer(async ({ origin }) => {
         const unsupported = await globalThis.fetch(`${origin}/v1/im/notifications`, {
@@ -419,6 +591,59 @@ test('configured production process migrates Postgres, starts Koishi and closes 
 
     const restarted = await startConfiguredGatewayProcess(environment, { log: () => {} });
     await restarted.close();
+});
+
+test('configured production process registers an optional WeCom AI Bot URL callback channel', async (context) => {
+    const databaseUrl = process.env.DATABASE_URL ?? 'postgres://voicelife:voicelife@127.0.0.1:5432/voicelife';
+    const probe = new PostgresImUnitOfWork(databaseUrl);
+    try {
+        await probe.migrate();
+    } catch (error) {
+        await probe.close().catch(() => undefined);
+        context.skip(`PostgreSQL unavailable: ${error instanceof Error ? error.name : 'unknown'}`);
+        return;
+    }
+    await probe.close();
+
+    const wecomChannelId = `wecom-process-${Date.now()}`;
+    const gateway = await startConfiguredGatewayProcess(
+        fixtureEnvironment({
+            DATABASE_URL: databaseUrl,
+            GATEWAY_PORT: '0',
+            WECHAT_CHANNEL_ACCOUNT_ID: `wechat-process-${Date.now()}`,
+            WECOM_AIBOT_CHANNEL_ACCOUNT_ID: wecomChannelId,
+            WECOM_AIBOT_BOT_ID: 'bot-fixture',
+            WECOM_AIBOT_WEBHOOK_TOKEN: 'wecom-webhook-token',
+            WECOM_AIBOT_ENCODING_AES_KEY: 'abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG',
+        }),
+        { log: () => {} },
+    );
+    try {
+        assert.equal((await globalThis.fetch(`${gateway.origin}/healthz`)).status, 200);
+
+        const check = new PostgresImUnitOfWork(databaseUrl);
+        try {
+            const account = await check.transaction((tx) => tx.channelAccounts.findById(wecomChannelId));
+            assert.deepEqual(
+                {
+                    id: account?.id,
+                    platform: account?.platform,
+                    tenantExternalId: account?.tenantExternalId,
+                    connectionMode: account?.connectionMode,
+                },
+                {
+                    id: wecomChannelId,
+                    platform: 'wecom_aibot',
+                    tenantExternalId: 'bot-fixture',
+                    connectionMode: 'webhook',
+                },
+            );
+        } finally {
+            await check.close();
+        }
+    } finally {
+        await gateway.close();
+    }
 });
 
 test('production server serializes action commands as SSE and logs correlation ids safely', async () => {
