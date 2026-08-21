@@ -272,6 +272,13 @@ std::string SerializeListToolsResult(const ListToolsResult& result) {
         }
     }
 
+    // Linx's tools/list contract uses a nullable cursor even when the complete
+    // tool set fits in one page. Omitting it makes the platform reject the
+    // response and close the WebSocket after the initial MCP exchange.
+    if (!yyjson_mut_obj_add(root, MakeString(document.get(), "nextCursor"), yyjson_mut_null(document.get()))) {
+        return "{}";
+    }
+
     return WriteDocument(document.get());
 }
 
