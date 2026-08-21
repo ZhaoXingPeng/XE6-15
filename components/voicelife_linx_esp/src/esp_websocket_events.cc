@@ -163,18 +163,13 @@ void EspWebSocketTransport::Impl::TxLoop() {
             continue;
         }
         if (sent < 0 || static_cast<size_t>(sent) != want) {
-            // 发送失败（写阻塞/短写/连接已断）：不能直接 esp_websocket_client_stop
-            // ——stop 会停止客户端，ESP 内建自动重连（disable_auto_reconnect=false）
-            // 随之失效，Session 永久卡在非 Ready（无法二次唤醒/说话）。
-            // 正确做法：停止后立即重启 client，让内建自动重连继续负责重连
-            // （单一重连执行者），随后断开事件会走 transport_disconnected 恢复。
-            ESP_LOGW(detail::kTag, "LINX_TX_SEND_FAIL sent=%d want=%u, restart client for reconnect", sent,
+            // 发送失败（写阻塞/短写/连接已断）：ESP-IDF 已在 transport 错误
+            // 中切换到 WAIT_TIMEOUT，并由 disable_auto_reconnect=false 的唯一
+            // 客户端任务负责重连。这里不能从 TX 任务并发 stop/start；否则会
+            // 与客户端自己的重连任务竞争，出现 "Error create websocket task"
+            // 后让 VoiceSession 永久停在非 Ready，后续唤醒全部失败。
+            ESP_LOGW(detail::kTag, "LINX_TX_SEND_FAIL sent=%d want=%u, await client auto-reconnect", sent,
                      static_cast<unsigned>(want));
-            if (client_ != nullptr && !closing_.load()) {
-                (void)esp_websocket_client_stop(client_);
-                // 重启以恢复内建自动重连；start 会重新进入连接流程并自动重连。
-                (void)esp_websocket_client_start(client_);
-            }
             // 本次连接的媒体和控制命令都不能穿过重连边界。仅清理 PCM
             // 会让失效的 listen.start/abort 在新连接上被错误发送。
             detail::LinxTxItem* remaining = nullptr;
