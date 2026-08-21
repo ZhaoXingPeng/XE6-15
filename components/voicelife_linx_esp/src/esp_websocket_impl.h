@@ -53,6 +53,7 @@ struct EventEnvelope {
     int tls_cert_flags = 0;
     int handshake_status = 0;
     int socket_errno = 0;
+    int close_status_code = 0;
     std::array<uint8_t, kMaxEventChunkBytes> data{};
 };
 

@@ -53,20 +53,40 @@ void EspWebSocketTransport::Impl::Enqueue(int32_t event_id, const esp_websocket_
         // - TCP 有序 FIN（esp-tls 报 TCP_CLOSED_FIN）
         // 均映射为 kDisconnected（触发自动重连），其余才是真正故障（证书/握手/超时）。
         const auto error_type = event_data != nullptr ? event_data->error_handle.error_type : WEBSOCKET_ERROR_TYPE_NONE;
-        const bool ordered_close =
-            error_type == WEBSOCKET_ERROR_TYPE_SERVER_CLOSE ||
-            (event_data != nullptr && event_data->error_handle.esp_tls_last_esp_err == ESP_ERR_ESP_TLS_TCP_CLOSED_FIN);
+        const bool tcp_transport_error = error_type == WEBSOCKET_ERROR_TYPE_TCP_TRANSPORT;
+        const bool ordered_close = error_type == WEBSOCKET_ERROR_TYPE_SERVER_CLOSE ||
+                                   (tcp_transport_error && event_data != nullptr &&
+                                    event_data->error_handle.esp_tls_last_esp_err == ESP_ERR_ESP_TLS_TCP_CLOSED_FIN);
+        if (event_data != nullptr) {
+            // esp_websocket_client 1.8.0 leaves the compatible TLS fields
+            // unspecified for error_type=NONE; only report them for TCP errors.
+            ESP_LOGW(detail::kTag,
+                     "LINX_WS_ERROR_EVENT event=ERROR type=%u close=%d handshake=%d tls_valid=%d tls=%d stack=%d "
+                     "cert_flags=%d errno=%d",
+                     static_cast<unsigned>(error_type), event_data->close_status_code,
+                     event_data->error_handle.esp_ws_handshake_status_code, tcp_transport_error ? 1 : 0,
+                     tcp_transport_error ? event_data->error_handle.esp_tls_last_esp_err : 0,
+                     tcp_transport_error ? event_data->error_handle.esp_tls_stack_err : 0,
+                     tcp_transport_error ? event_data->error_handle.esp_tls_cert_verify_flags : 0,
+                     tcp_transport_error ? event_data->error_handle.esp_transport_sock_errno : 0);
+        } else {
+            ESP_LOGW(detail::kTag, "LINX_WS_ERROR_EVENT event=ERROR type=%u close=0 event_data=null",
+                     static_cast<unsigned>(error_type));
+        }
         if (ordered_close) {
             envelope.kind = detail::EventKind::kDisconnected;
             envelope.opcode = static_cast<uint8_t>(error_type);
         } else {
             envelope.kind = detail::EventKind::kError;
             if (event_data != nullptr) {
-                envelope.tls_last_error = event_data->error_handle.esp_tls_last_esp_err;
-                envelope.tls_stack_error = event_data->error_handle.esp_tls_stack_err;
-                envelope.tls_cert_flags = event_data->error_handle.esp_tls_cert_verify_flags;
                 envelope.handshake_status = event_data->error_handle.esp_ws_handshake_status_code;
-                envelope.socket_errno = event_data->error_handle.esp_transport_sock_errno;
+                envelope.close_status_code = event_data->close_status_code;
+                if (tcp_transport_error) {
+                    envelope.tls_last_error = event_data->error_handle.esp_tls_last_esp_err;
+                    envelope.tls_stack_error = event_data->error_handle.esp_tls_stack_err;
+                    envelope.tls_cert_flags = event_data->error_handle.esp_tls_cert_verify_flags;
+                    envelope.socket_errno = event_data->error_handle.esp_transport_sock_errno;
+                }
                 envelope.opcode = static_cast<uint8_t>(error_type);
             }
         }
@@ -212,9 +232,11 @@ void EspWebSocketTransport::Impl::HandleEnvelope(const detail::EventEnvelope& en
             }
             return;
         case detail::EventKind::kError: {
-            ESP_LOGW(detail::kTag, "LINX_WS_ERROR type=%u tls=%d stack=%d cert_flags=%d handshake=%d errno=%d",
-                     static_cast<unsigned>(envelope.opcode), envelope.tls_last_error, envelope.tls_stack_error,
-                     envelope.tls_cert_flags, envelope.handshake_status, envelope.socket_errno);
+            ESP_LOGW(detail::kTag,
+                     "LINX_WS_ERROR event=worker type=%u close=%d tls=%d stack=%d cert_flags=%d handshake=%d errno=%d",
+                     static_cast<unsigned>(envelope.opcode), envelope.close_status_code, envelope.tls_last_error,
+                     envelope.tls_stack_error, envelope.tls_cert_flags, envelope.handshake_status,
+                     envelope.socket_errno);
             std::lock_guard<std::mutex> status_lock(status_mutex_);
             error_status_ = Status::Error(ErrorCode::kUnavailable, "ESP Linx WebSocket 收到错误事件");
         }
